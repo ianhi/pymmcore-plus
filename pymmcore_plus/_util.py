@@ -3,7 +3,9 @@ import re
 import sys
 from itertools import chain
 from pathlib import Path
-from typing import Optional, Type
+from typing import Optional, Tuple, Type
+
+from useq import MDASequence
 
 camel_to_snake = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -79,3 +81,10 @@ def wrap_for_pyro(cls: Type) -> Type:
 
     _dict_["__init__"] = __init__
     return type(f"{cls.__name__}Proxy", (), _dict_)
+
+
+def get_axis_order(seq: MDASequence) -> Tuple[str]:
+    """Get the axis order using only axes that are present in events."""
+    event = next(seq.iter_events())
+    event_axes = list(event.index.keys())
+    return tuple(a for a in seq.axis_order if a in event_axes)

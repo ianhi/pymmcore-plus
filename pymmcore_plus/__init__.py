@@ -16,6 +16,7 @@ from .core import (
     PortType,
     PropertyType,
 )
+from .mda_writers import MDA_multifile_tiff_writer, MDAWriter
 
 __all__ = [
     "ActionType",
@@ -30,4 +31,6 @@ __all__ = [
     "PropertyType",
     "RemoteMMCore",
     "CMMCorePlus",
+    "MDAWriter",
+    "MDA_multifile_tiff_writer",
 ]

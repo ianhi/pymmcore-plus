@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, TypeVar, Uni
 
 import pymmcore
 from loguru import logger
+from numpy import dtype
 
-from .._util import find_micromanager
+from .._util import find_micromanager, get_axis_order
+from ..mda_writers import MDAWriter
 from ._config import Configuration
 from ._constants import DeviceDetectionStatus, DeviceType, PropertyType
 from ._metadata import Metadata
@@ -283,9 +285,18 @@ class CMMCorePlus(pymmcore.CMMCore):
             for i in range(self.getNumberOfCameraChannels())
         )
 
-    def run_mda(self, sequence: MDASequence) -> None:
+    def run_mda(self, sequence: MDASequence, writer: MDAWriter = None) -> None:
         self.events.sequenceStarted.emit(sequence)
         logger.info("MDA Started: {}", sequence)
+        if writer is not None:
+            axis_order = get_axis_order(sequence)
+            # the dtype works without divisions thanks to `_fix_image`
+            writer.initialize(
+                sequence.shape,
+                axis_order,
+                sequence,
+                dtype=dtype(f"uint{self.getImageBitDepth()}"),
+            )
         self._paused = False
         paused_time = 0.0
         t0 = time.perf_counter()  # reference time, in seconds
@@ -350,9 +361,13 @@ class CMMCorePlus(pymmcore.CMMCore):
             img = self.getImage()
 
             self.events.frameReady.emit(img, event)
+            if writer is not None:
+                writer.addFrame(img, tuple(event.index[a] for a in axis_order), event)
 
         logger.info("MDA Finished: {}", sequence)
         self.events.sequenceFinished.emit(sequence)
+        if writer is not None:
+            writer.finalize()
 
     def _fix_image(self, img: np.ndarray) -> np.ndarray:
         """Fix img shape/dtype based on `self.getNumberOfComponents()`.

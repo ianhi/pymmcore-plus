@@ -142,4 +142,4 @@ Micro-Manager-*
 .vscode
 
 # from running MDA example
-examples/mda_data*
+**mda_data*

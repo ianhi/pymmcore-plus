@@ -7,30 +7,10 @@ from typing import Optional
 
 from loguru import logger
 from Pyro5 import api, core, errors
-from typing_extensions import Protocol
 
 from .. import server
 from .._serialize import register_serializers
-
-
-class CallbackProtocol(Protocol):
-    def receive_core_callback(self, signal_name: str, args: tuple) -> None:
-        """Will be called by server with name of signal, and tuple of args."""
-
-
-def _get_auto_callback_class():
-    for modname in {"PyQt5", "PySide2", "PyQt6", "PySide6"}:
-        qmodule = sys.modules.get(modname)
-        if qmodule:
-            QtWidgets = getattr(qmodule, "QtWidgets")
-            if QtWidgets.QApplication.instance() is not None:
-                from .callbacks.qcallback import QCoreCallback
-
-                return QCoreCallback
-
-    from .callbacks.basic import SynchronousCallback
-
-    return SynchronousCallback
+from ._callbacks import get_auto_callback_pyro
 
 
 class RemoteMMCore(api.Proxy):
@@ -46,7 +26,7 @@ class RemoteMMCore(api.Proxy):
         callback_class=None,
     ):
         if callback_class is None:
-            callback_class = _get_auto_callback_class()
+            callback_class = get_auto_callback_pyro()
 
         register_serializers()
         ensure_server_running(host, port, timeout, verbose, cleanup_new)

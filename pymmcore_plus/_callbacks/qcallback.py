@@ -1,5 +1,6 @@
-from Pyro5.api import expose
+import numpy as np
 from qtpy.QtCore import QObject, Signal
+from useq import MDAEvent, MDASequence
 
 
 class QCoreCallback(QObject):
@@ -21,14 +22,9 @@ class QCoreCallback(QObject):
     sLMExposureChanged = SLMExposureChanged  # alias
 
     # added for CMMCorePlus
-    sequenceStarted = Signal(object)  # at the start of an MDA sequence
+    sequenceStarted = Signal(MDASequence)  # at the start of an MDA sequence
     sequencePauseToggled = Signal(bool)  # when MDA is paused/unpaused
-    sequenceCanceled = Signal(object)  # when mda is canceled
-    sequenceFinished = Signal(object)  # when mda is done (whether canceled or not)
-    frameReady = Signal(object, object)  # after each event in the sequence
-    imageSnapped = Signal(object)  # after an image is snapped
-
-    @expose
-    def receive_core_callback(self, signal_name, args):
-        # let it throw an exception.
-        getattr(self, signal_name).emit(*args)
+    sequenceCanceled = Signal(MDASequence)  # when mda is canceled
+    sequenceFinished = Signal(MDASequence)  # when mda is done (whether canceled or not)
+    frameReady = Signal(np.ndarray, MDAEvent)  # after each event in the sequence
+    imageSnapped = Signal(np.ndarray)  # after an image is snapped

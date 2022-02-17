@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 from useq import MDAEvent, MDASequence
 
+from pymmcore_plus._callbacks import CMMCoreSignaler
+from pymmcore_plus._callbacks.qcallback import QCoreCallback
 from pymmcore_plus.client import RemoteMMCore
-from pymmcore_plus.client.callbacks.basic import SynchronousCallback
-from pymmcore_plus.client.callbacks.qcallback import QCoreCallback
 from pymmcore_plus.server import DEFAULT_URI
 
 
@@ -66,7 +66,7 @@ def test_cb_without_qt(proxy):
 
     currently only works for Qt callbacks... need to figure out synchronous approach.
     """
-    assert isinstance(proxy.events, SynchronousCallback)
+    assert isinstance(proxy.events, CMMCoreSignaler)
     cam = [None]
 
     @proxy.events.systemConfigurationLoaded.connect

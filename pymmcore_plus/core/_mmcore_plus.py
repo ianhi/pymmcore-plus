@@ -8,6 +8,7 @@ import weakref
 from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
+from threading import RLock, Thread
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -22,12 +23,13 @@ from typing import (
 
 import pymmcore
 from loguru import logger
+from wrapt import synchronized
 
+from .._callbacks import CMMCoreSignaler, get_auto_callback_class
 from .._util import find_micromanager
 from ._config import Configuration
 from ._constants import DeviceDetectionStatus, DeviceType, PropertyType
 from ._metadata import Metadata
-from ._signals import _CMMCoreSignaler
 
 if TYPE_CHECKING:
     import numpy as np
@@ -43,7 +45,21 @@ _OBJECTIVE_DEVICE_RE = re.compile(
 _CHANNEL_REGEX = re.compile("(chan{1,2}(el)?|filt(er)?)s?", re.IGNORECASE)
 
 
+_instance = None
+
+
 class CMMCorePlus(pymmcore.CMMCore):
+    lock = RLock()
+
+    @classmethod
+    def instance(
+        cls, mm_path=None, adapter_paths: ListOrTuple[str] = ()
+    ) -> CMMCorePlus:
+        global _instance
+        if _instance is None:
+            _instance = cls(mm_path, adapter_paths)
+        return _instance
+
     def __init__(self, mm_path=None, adapter_paths: ListOrTuple[str] = ()):
         super().__init__()
 
@@ -53,7 +69,7 @@ class CMMCorePlus(pymmcore.CMMCore):
         if adapter_paths:
             self.setDeviceAdapterSearchPaths(adapter_paths)
 
-        self.events = _CMMCoreSignaler()
+        self.events = get_auto_callback_class()()
         self._callback_relay = MMCallbackRelay(self.events)
         self.registerCallback(self._callback_relay)
         self._canceled = False
@@ -76,6 +92,7 @@ class CMMCorePlus(pymmcore.CMMCore):
 
     # Re-implemented methods from the CMMCore API
 
+    @synchronized(lock)
     def setProperty(
         self, label: str, propName: str, propValue: Union[bool, float, int, str]
     ) -> None:
@@ -126,15 +143,23 @@ class CMMCorePlus(pymmcore.CMMCore):
         logger.info(f"setting adapter search paths: {adapter_paths}")
         super().setDeviceAdapterSearchPaths(adapter_paths)
 
-    def loadSystemConfiguration(self, fileName="demo") -> None:
-        if fileName.lower() == "demo":
-            if not self._mm_path:
-                raise ValueError(  # pragma: no cover
-                    "No micro-manager path provided. Cannot load 'demo' file.\nTry "
-                    "installing micro-manager with `python install_mm.py`"
-                )
-            fileName = (Path(self._mm_path) / "MMConfig_demo.cfg").resolve()
-        super().loadSystemConfiguration(str(fileName))
+    @synchronized(lock)
+    def loadSystemConfiguration(
+        self, fileName: str | Path = "MMConfig_demo.cfg"
+    ) -> None:
+        """Load a config file.
+
+        For relative paths first checks relative to the current
+        working directory, then in the device adapter path.
+        """
+        fpath = Path(fileName).expanduser()
+        if not fpath.exists() and not fpath.is_absolute() and self._mm_path:
+            fpath = Path(self._mm_path) / fileName
+        if not fpath.exists():
+            raise FileNotFoundError(f"Path does not exist: {fpath}")
+        logger.debug("loading config")
+        super().loadSystemConfiguration(str(fpath.resolve()))
+        logger.debug("config loaded")
 
     def unloadAllDevices(self) -> None:
         # this log won't appear when exiting ipython
@@ -165,6 +190,11 @@ class CMMCorePlus(pymmcore.CMMCore):
         """Returns the configuration object for a given group and name."""
 
         cfg = super().getConfigData(configGroup, configName)
+        return cfg if native else Configuration.from_configuration(cfg)
+
+    def getPixelSizeConfigData(self, configName: str, *, native=False) -> Configuration:
+        """Returns the configuration object for a given pixel size preset."""
+        cfg = super().getPixelSizeConfigData(configName)
         return cfg if native else Configuration.from_configuration(cfg)
 
     def getConfigGroupState(self, group: str, *, native=False) -> Configuration:
@@ -202,6 +232,7 @@ class CMMCorePlus(pymmcore.CMMCore):
 
     # metadata overloads that don't require instantiating metadata first
 
+    @synchronized(lock)
     def getLastImageMD(
         self, md: Optional[Metadata] = None
     ) -> Tuple[np.ndarray, Metadata]:
@@ -210,6 +241,7 @@ class CMMCorePlus(pymmcore.CMMCore):
         img = super().getLastImageMD(md)
         return img, md
 
+    @synchronized(lock)
     def popNextImageMD(
         self, md: Optional[Metadata] = None
     ) -> Tuple[np.ndarray, Metadata]:
@@ -218,6 +250,7 @@ class CMMCorePlus(pymmcore.CMMCore):
         img = super().popNextImageMD(md)
         return img, md
 
+    @synchronized(lock)
     def popNextImage(self) -> np.ndarray:
         """Gets and removes the next image from the circular buffer.
 
@@ -226,6 +259,7 @@ class CMMCorePlus(pymmcore.CMMCore):
         """
         return self._fix_image(super().popNextImage())
 
+    @synchronized(lock)
     def getNBeforeLastImageMD(
         self, n: int, md: Optional[Metadata] = None
     ) -> Tuple[np.ndarray, Metadata]:
@@ -341,9 +375,9 @@ class CMMCorePlus(pymmcore.CMMCore):
                 devices.append(device)
         return devices
 
-    def getOrGuessChannelGroup(self) -> str | None:
+    def getOrGuessChannelGroup(self) -> List[str]:
         """
-        Get the channelGroup or find a likely candidate.
+        Get the channelGroup or find a likely set of candidates.
 
         If the group is not defined via ``.getChannelGroup`` then likely candidates
         will be found by searching for config groups with names that match this
@@ -352,19 +386,16 @@ class CMMCorePlus(pymmcore.CMMCore):
 
             reg = re.compile("(chan{1,2}(el)?|filt(er)?)s?", re.IGNORECASE)
 
-
-        If the config group name does not match one of the available config groups
-        then *None* will be returned.
-
         """
         chan_group = self.getChannelGroup()
-        if chan_group == "":
-            # not set in core. Try "Channel" and other variations as fallbacks
-            for group in self.getAvailableConfigGroups():
-                if self._channel_group_regex.match(group):
-                    return group
-        elif chan_group in self.getAvailableConfigGroups():
-            return chan_group
+        if chan_group:
+            return [chan_group]
+        # not set in core. Try "Channel" and other variations as fallbacks
+        channel_guess = []
+        for group in self.getAvailableConfigGroups():
+            if self._channel_group_regex.match(group):
+                channel_guess.append(group)
+        return channel_guess
 
     def setRelativeXYZPosition(
         self, dx: float = 0, dy: float = 0, dz: float = 0
@@ -385,13 +416,31 @@ class CMMCorePlus(pymmcore.CMMCore):
     def setZPosition(self, val: float) -> None:
         return self.setPosition(self.getFocusDevice(), val)
 
+    @synchronized(lock)
+    def setPosition(self, deviceLabel: str, val: float) -> None:
+        return super().setPosition(deviceLabel, val)
+
+    @synchronized(lock)
+    def setXYPosition(self, x: float, y: float) -> None:
+        return super().setXYPosition(x, y)
+
+    @synchronized(lock)
     def getCameraChannelNames(self) -> Tuple[str, ...]:
         return tuple(
             self.getCameraChannelName(i)
             for i in range(self.getNumberOfCameraChannels())
         )
 
-    def run_mda(self, sequence: MDASequence) -> None:
+    @synchronized(lock)
+    def snapImage(self) -> None:
+        return super().snapImage()
+
+    def run_mda(self, sequence: MDASequence) -> Thread:
+        th = Thread(target=self._mda, args=(sequence,))
+        th.start()
+        return th
+
+    def _mda(self, sequence) -> None:
         self.events.sequenceStarted.emit(sequence)
         logger.info("MDA Started: {}", sequence)
         self._paused = False
@@ -484,6 +533,30 @@ class CMMCorePlus(pymmcore.CMMCore):
             img = img.reshape(new_shape)[:, :, (2, 1, 0, 3)]  # mmcore gives bgra
         return img
 
+    def snap(self, *args, fix=True) -> np.ndarray:
+        """
+        snap and return an image.
+
+        In contrast to ``snapImage`` this will directly return the image
+        without also calling ``getImage``.
+
+        Parameters
+        ----------
+        *args :
+            Passed through to ``getImage``
+        fix : bool, default: True
+            Whether to fix the shape of images with n_components >1
+            Pass on to ``getImage``
+
+        Returns
+        -------
+        img : np.ndarray
+        """
+        self.snapImage()
+        img = self.getImage()
+        self.events.imageSnapped.emit(img)
+        return img
+
     def getImage(self, *args, fix=True) -> np.ndarray:
         """Exposes the internal image buffer.
 
@@ -550,7 +623,7 @@ for name in (
 class _MMCallbackRelay(pymmcore.MMEventCallback):
     """Relays MMEventCallback methods to CMMCorePlus.signal."""
 
-    def __init__(self, emitter: _CMMCoreSignaler):
+    def __init__(self, emitter: CMMCoreSignaler):
         self._emitter = emitter
         super().__init__()
 

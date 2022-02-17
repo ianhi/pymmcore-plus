@@ -1,14 +1,13 @@
 import numpy as np
-from psygnal import Signal
+from qtpy.QtCore import QObject, Signal
 from useq import MDAEvent, MDASequence
 
 
-class _CMMCoreSignaler:
-    """Signals that will be emitted from CMMCorePlus and RemoteMMCore objects."""
+class QCoreCallback(QObject):
 
     # native MMCore callback events
     propertiesChanged = Signal()
-    propertyChanged = Signal(str, str, str)
+    propertyChanged = Signal(str, str, object)
     channelGroupChanged = Signal(str)
     configGroupChanged = Signal(str, str)
     configSet = Signal(str, str)
@@ -17,8 +16,10 @@ class _CMMCoreSignaler:
     pixelSizeAffineChanged = Signal(float, float, float, float, float, float)
     stagePositionChanged = Signal(str, float)
     XYStagePositionChanged = Signal(str, float, float)
+    xYStagePositionChanged = XYStagePositionChanged  # alias
     exposureChanged = Signal(str, float)
     SLMExposureChanged = Signal(str, float)
+    sLMExposureChanged = SLMExposureChanged  # alias
 
     # added for CMMCorePlus
     sequenceStarted = Signal(MDASequence)  # at the start of an MDA sequence
@@ -26,12 +27,4 @@ class _CMMCoreSignaler:
     sequenceCanceled = Signal(MDASequence)  # when mda is canceled
     sequenceFinished = Signal(MDASequence)  # when mda is done (whether canceled or not)
     frameReady = Signal(np.ndarray, MDAEvent)  # after each event in the sequence
-
-    # aliases for lower casing
-    @property
-    def xYStagePositionChanged(self):
-        return self.XYStagePositionChanged
-
-    @property
-    def sLMExposureChanged(self):
-        return self.SLMExposureChanged
+    imageSnapped = Signal(np.ndarray)  # after an image is snapped

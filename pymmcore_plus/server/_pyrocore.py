@@ -4,15 +4,15 @@ from typing import TYPE_CHECKING, Set
 from Pyro5 import errors
 from Pyro5.api import behavior, expose, oneway
 
+from .._callbacks import CMMCoreSignaler
 from .._util import wrap_for_pyro
 from ..core._mmcore_plus import CMMCorePlus
-from ..core._signals import _CMMCoreSignaler
 
 if TYPE_CHECKING:
     from ..client._client import CallbackProtocol
 
 
-_SIGNAL_NAMES = {name for name in dir(_CMMCoreSignaler) if not name.startswith("_")}
+_SIGNAL_NAMES = {name for name in dir(CMMCoreSignaler) if not name.startswith("_")}
 
 
 @expose

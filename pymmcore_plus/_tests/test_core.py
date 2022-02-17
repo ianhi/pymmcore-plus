@@ -1,6 +1,9 @@
 import json
 import os
 import re
+import time
+from pathlib import Path
+from threading import Thread
 from unittest.mock import MagicMock, call, patch
 
 import numpy as np
@@ -10,6 +13,7 @@ import pytest
 from pymmcore import CMMCore, PropertySetting
 from useq import MDASequence
 
+import pymmcore_plus
 from pymmcore_plus import (
     CMMCorePlus,
     Configuration,
@@ -18,16 +22,22 @@ from pymmcore_plus import (
     Metadata,
     PropertyType,
 )
+from pymmcore_plus._callbacks import CMMCoreSignaler
 
 
 @pytest.fixture
 def core():
     core = CMMCorePlus()
+    # force using psygnal callbacks
+    # necessary until tests can be adapted to work using qtbot
+    core.events = CMMCoreSignaler()
+    core._callback_relay = pymmcore_plus.core._mmcore_plus.MMCallbackRelay(core.events)
+    core.registerCallback(core._callback_relay)
     if not core.getDeviceAdapterSearchPaths():
         pytest.fail(
             "To run tests, please install MM with `python -m pymmcore_plus.install`"
         )
-    core.loadSystemConfiguration("demo")
+    core.loadSystemConfiguration()
     return core
 
 
@@ -53,6 +63,28 @@ def test_search_paths(core: CMMCorePlus):
 
     with pytest.raises(TypeError):
         core.setDeviceAdapterSearchPaths("test_path")
+
+
+def test_load_system_config(core: CMMCorePlus):
+    with pytest.raises(FileNotFoundError):
+        core.loadSystemConfiguration("nonexistent")
+
+    config_path = Path(__file__).parent / "local_config.cfg"
+    core.loadSystemConfiguration(str(config_path))
+    assert core.getLoadedDevices() == (
+        "DHub",
+        "Camera",
+        "Dichroic",
+        "Emission",
+        "Excitation",
+        "Objective",
+        "Z",
+        "Path",
+        "XY",
+        "Shutter",
+        "Autofocus",
+        "Core",
+    )
 
 
 def test_cb_exceptions(core: CMMCorePlus, caplog):
@@ -105,6 +137,7 @@ def test_mda(core: CMMCorePlus):
     core.events.exposureChanged.connect(exp_mock)
 
     core.run_mda(mda)
+    time.sleep(0.5)
     assert fr_mock.call_count == len(list(mda))
     for event, _call in zip(mda, fr_mock.call_args_list):
         assert isinstance(_call.args[0], np.ndarray)
@@ -162,6 +195,7 @@ def test_mda_pause_cancel(core: CMMCorePlus):
             core.cancel()
 
     core.run_mda(mda)
+    time.sleep(0.5)
 
     ss_mock.assert_called_once_with(mda)
     cancel_mock.assert_called_once_with(mda)
@@ -330,28 +364,71 @@ def test_get_objectives(core: CMMCorePlus):
 
 
 def test_guess_channel_group(core: CMMCorePlus):
+
     chan_group = core.getChannelGroup()
-    assert core.getOrGuessChannelGroup() == chan_group
+    assert chan_group == "Channel"
+
+    assert core.getOrGuessChannelGroup() == ["Channel"]
+
     with patch.object(core, "getChannelGroup", return_value=""):
-        assert core.getOrGuessChannelGroup() == "Channel"
+        assert core.getOrGuessChannelGroup() == ["Channel"]
 
         with pytest.raises(TypeError):
             core.channelGroup_pattern = 4
 
         # assign a new regex that won't match Channel using a str
-        # this will return Camera, but that's because this a bad regex
+        # this will return all the mm groups, but that's because this a bad regex
         # to use
         core.channelGroup_pattern = "^((?!(Channel)).)*$"
-        assert core.getOrGuessChannelGroup() == "Camera"
+        assert core.getOrGuessChannelGroup() == [
+            "Camera",
+            "LightPath",
+            "Objective",
+            "System",
+        ]
 
         # assign new using a pre-compile pattern
         core.channelGroup_pattern = re.compile("Channel")
         chan_group = core.getOrGuessChannelGroup()
-        assert chan_group == "Channel"
+        assert chan_group == ["Channel"]
 
 
-def test_aliased_signals(core: CMMCorePlus):
-    xy_cb = MagicMock()
-    core.events.xYStagePositionChanged.connect(xy_cb)
-    core.setXYPosition(1.0, 1.5)
-    xy_cb.assert_has_calls([call("XY", 1.005, 1.5), call("XY", 1.0, 1.5)])
+def test_lock_and_callbacks(core: CMMCorePlus):
+    # when a function with a lock triggers a callback
+    # that callback should be able to call locked functions
+    # without hanging.
+
+    # do some threading silliness here so we don't accidentally hang our
+    # test if things go wrong have to use *got_lock* to check because we
+    # can't assert in the function as theads don't throw their exceptions
+    # back into the calling thread.
+    got_lock = False
+
+    def cb(*args, **kwargs):
+        nonlocal got_lock
+        got_lock = core.lock.acquire(timeout=0.1)
+        if got_lock:
+            core.lock.release()
+
+    core.events.XYStagePositionChanged.connect(cb)
+
+    def trigger_cb():
+        core.setXYPosition(4, 5)
+
+    th = Thread(target=trigger_cb)
+    th.start()
+    time.sleep(0.2)
+    assert got_lock
+    got_lock = False
+
+    core.events.frameReady.connect(cb)
+    mda = MDASequence(
+        time_plan={"interval": 0.1, "loops": 2},
+        stage_positions=[(1, 1, 1)],
+        z_plan={"range": 3, "step": 1},
+        channels=[{"config": "DAPI", "exposure": 1}],
+    )
+
+    core.run_mda(mda)
+    time.sleep(0.5)
+    assert got_lock

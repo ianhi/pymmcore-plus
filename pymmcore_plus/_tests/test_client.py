@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 from useq import MDAEvent, MDASequence
 
+from pymmcore_plus._callbacks import CMMCoreSignaler
+from pymmcore_plus._callbacks.qcallback import QCoreCallback
 from pymmcore_plus.client import RemoteMMCore
-from pymmcore_plus.client.callbacks.basic import SynchronousCallback
-from pymmcore_plus.client.callbacks.qcallback import QCoreCallback
 from pymmcore_plus.server import DEFAULT_URI
 
 
@@ -40,6 +40,12 @@ def test_mda(qtbot, proxy):
         proxy.events.frameReady,
         proxy.events.sequenceFinished,
     ]
+    signals = [
+        (proxy.events.sequenceStarted, "started"),
+        (proxy.events.frameReady, "frameReady1"),
+        (proxy.events.frameReady, "frameReady2"),
+        (proxy.events.sequenceFinished, "finishd"),
+    ]
     checks = [_check_seq, _check_frame, _check_frame, _check_seq]
 
     with qtbot.waitSignals(signals, check_params_cbs=checks, order="strict"):
@@ -66,7 +72,7 @@ def test_cb_without_qt(proxy):
 
     currently only works for Qt callbacks... need to figure out synchronous approach.
     """
-    assert isinstance(proxy.events, SynchronousCallback)
+    assert isinstance(proxy.events, CMMCoreSignaler)
     cam = [None]
 
     @proxy.events.systemConfigurationLoaded.connect

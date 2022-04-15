@@ -550,7 +550,8 @@ class CMMCorePlus(pymmcore.CMMCore):
 
     @synchronized(lock)
     def snapImage(self) -> None:
-        return super().snapImage()
+        super().snapImage()
+        self.events.imageSnapped.emit(self.getImage())
 
     @property
     def mda(self):
@@ -647,7 +648,6 @@ class CMMCorePlus(pymmcore.CMMCore):
         """
         self.snapImage()
         img = self.getImage()
-        self.events.imageSnapped.emit(img)
         return img
 
     def getImage(self, *args, fix=True) -> np.ndarray:
